@@ -18,12 +18,14 @@ error CreatePiggy__WithdrawalFailed();
 
 
 
-/// @title A smart contract payroll
+/// @title A smart contract PiggyBank
 /// @dev It uses Chainlink Automation to allocate payments to recipients.
 /// They can withdraw their payments.
  contract PiggyBanker is Ownable,AutomationCompatibleInterface {
 
     using SafeMath for uint256;
+
+    // address public owner;
 
  // Variables for locking the deposit
     uint256 public lockTime;
@@ -36,8 +38,7 @@ error CreatePiggy__WithdrawalFailed();
     struct CreatePiggy {
         address  _recipient;
         uint256 _amount; // Amount of tokens to  deposited
-        uint256 _depositTime; // When the deposit was made?
-        uint256 _unlockTime; // When the deposit will be unlocked?
+        uint256 lockTime; // When the deposit will be unlocked?
     }
 
     address[] private s_recipients;
@@ -75,18 +76,16 @@ error CreatePiggy__WithdrawalFailed();
     /// Add a PiggyBank.
     /// @param _recipient the address of the recipient
     /// @param _amount the wei amount the recipient will be allocated
-    /// @param _depositTime how often in seconds the recipient will be allocated the amount
-    /// @param _unlockTime how often in seconds the recipient will be allocated the amount
     /// @dev stores the _recipient in `s_recipients` and the CreatePiggy in `c_createPiggy`
  function createPiggyBank(
       address _recipient,
-      uint256 _amount,
-      uint256 _depositTime,
-      uint256 _unlockTime
- ) public {
+      uint256 _amount
+ ) public payable onlyOwner {
   ethersIn = ethersIn.add(_amount);
-   if (_amount == 0 || _unlockTime == 0){
-       revert CreatePiggy__InvalidPaymentData(_recipient,_amount,_unlockTime);
+        require(msg.value <= _amount);
+
+   if (_amount == 0 || lockTime == 0){
+       revert CreatePiggy__InvalidPaymentData(_recipient,_amount,lockTime);
    }
 
    if (c_createPiggy[_recipient]._amount > 0 ) {
@@ -95,8 +94,7 @@ error CreatePiggy__WithdrawalFailed();
 
    CreatePiggy memory createPiggy = CreatePiggy(
      _recipient,
-     _amount,
-     block.timestamp.add(_depositTime),
+     ethersIn,
      block.timestamp.add(lockTime)
    );
    s_recipients.push(_recipient);
@@ -114,30 +112,8 @@ error CreatePiggy__WithdrawalFailed();
    }
  }
 
-    /// Withdraw a recipient's payments.
- function withdrawPayment() public {
-   if(s_balances[msg.sender] > 0) {
-   if(s_balances[msg.sender] > address(this).balance){
-     emit InsufficientBalance(
-        msg.sender,
-       s_balances[msg.sender],
-      address(this).balance
-     );
-   } else {
-     uint256 userBalance = s_balances[msg.sender];
-     s_balances[msg.sender] = 0;
-     (bool success,) = payable(msg.sender).call{
-       value:userBalance
-     }("");
-     if( success ){
-      emit Transfer(address(this), msg.sender, userBalance);
-     }else{
-       s_balances[msg.sender] = userBalance;
-       revert CreatePiggy__WithdrawalFailed();
-   }
-   }
- }
- }
+
+
     /// Check if a payment is due.
     /// @param `paymentSchedule` the payment schedule to check
     /// @return true if a payment is due
@@ -147,7 +123,7 @@ error CreatePiggy__WithdrawalFailed();
     returns (bool)
     {
       return (createPiggy._amount > 0 &&
-      block.timestamp >= createPiggy._unlockTime);
+      block.timestamp >= createPiggy.lockTime);
     }
 
    /// @dev This function is called off-chain by Chainlink Automation nodes.
@@ -203,22 +179,60 @@ error CreatePiggy__WithdrawalFailed();
         for (uint256 i = 0; i < recipientsToPay.length; ++i) {
             createPiggy = c_createPiggy[recipientsToPay[i]];
             if (paymentDue(createPiggy)) {
+
                 // update the recipient's timestamp and balance
-                // createPiggy.lastTimestamp = block.timestamp;
-                // s_paymentSchedules[recipientsToPay[i]] = paymentSchedule;
-                // s_balances[recipientsToPay[i]] += paymentSchedule.amount;
-                emit PaymentDone(recipientsToPay[i], createPiggy._amount);
-            }
+                require(block.timestamp >= createPiggy.lockTime, "Unlock time not reached!");
+                // c_createPiggy[recipientsToPay[i]] = createPiggy;
+                // s_balances[recipientsToPay[i]] += createPiggy._amount;
+                // emit PaymentDone(recipientsToPay[i], createPiggy._amount);
+                 if(s_balances[msg.sender] > 0) {
+                 if(s_balances[msg.sender] > address(this).balance){
+                    emit InsufficientBalance(
+                    msg.sender,
+                    s_balances[msg.sender],
+                    address(this).balance
+                             );
+                    } else {
+                        uint256 userBalance = s_balances[msg.sender];
+                        s_balances[msg.sender] = 0;
+                        (bool success,) = payable(msg.sender).call{
+                        value:userBalance
+                        }("");
+                        if( success ){
+                        emit Transfer(address(this), msg.sender, userBalance);
+                        }else{
+                        s_balances[msg.sender] = userBalance;
+                        revert CreatePiggy__WithdrawalFailed();
+                    }
+                    }
+                    }
+                                }
+                            }
+                        }
+
+
+
+
+
+function getVerifyPaymentAddress() public view returns (address[] memory)  {
+        address[] memory recipientsToPay = new address[](s_recipients.length);
+        uint256 recipientToPayIndex = 0;
+
+        // check the payment interval of each recipient
+        CreatePiggy memory createPiggy;
+        for (uint256 i = 0; i < s_recipients.length; ++i) {
+        createPiggy = c_createPiggy[s_recipients[i]];
+          if (paymentDue(createPiggy)) {
+           recipientsToPay[recipientToPayIndex] = s_recipients[i];
+               ++recipientToPayIndex;
+ }
         }
-    }
-
-
-
-
+        return recipientsToPay;
+}
 
 function getPaymentSchedule(address recipient) public view returns(CreatePiggy memory) {
-return c_createPiggy[recipient];
-}
+    return c_createPiggy[recipient];
+    }
 
  function getUser() public view returns(address[] memory){
    return s_recipients;
@@ -229,5 +243,47 @@ return c_createPiggy[recipient];
     function balanceOf(address recipient) public view returns (uint256) {
         return s_balances[recipient];
     }
+    function getEthDeposited() public view returns (uint256) {
+        return ethersIn.div(10**18);
+    }
+
+    function getEthWithdrawn() public view returns (uint256) {
+        return ethersOut.div(10**18);
+    }
+
+    function getBalanceInWei() public view returns (uint256) {
+        return address(this).balance;
+    }
+
+    function getBalanceInEth() public view returns (uint256) {
+        uint256 weiBalance = address(this).balance;
+        uint256 ethBalance = weiBalance.div(10**18);
+        return ethBalance;
+    }
+
+    // Setters - a function that, obviously, set a value
+
+    // Set the unlock time of deposits to 10 minutes
+    function setUnlockTimeToTenMinutes() public onlyOwner {
+        lockTime = 10 minutes;
+    }
+
+    // Set the unlock time of deposits to 10 days
+    function setUnlockTimeToTenDays() public onlyOwner {
+        lockTime = 10 days;
+    }
+
+    // Set the unlock time of deposits to 5months
+    function setUnlockTimeToTenMonths() public onlyOwner {
+        lockTime = 5 * 30 days; // As we don't have "months" in solidity we will use 5 * 30 days
+    }
+
+    // Set the unlock time of deposits to 1 year
+    function setUnlockTimeToOneYear() public onlyOwner {
+        lockTime = 12 * 30 days; // As we don't have "years" in solidity we will use 12 * 30 days
+    }
+
+
+
 
  }
